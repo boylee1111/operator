@@ -749,7 +749,23 @@ pub fn tcp_probe() -> corev1::Probe {
     }
 }
 
-pub fn mtls_readiness_probe(mount_path: &str) -> corev1::Probe {
+pub fn mtls_readiness_probe() -> corev1::Probe {
+    corev1::Probe {
+        exec: Some(corev1::ExecAction {
+            command: Some(vec![
+                "rustfs".to_string(),
+                "health".to_string(),
+                "--ready".to_string(),
+                "--insecure".to_string(),
+                "--timeout".to_string(),
+                "2".to_string(),
+            ]),
+        }),
+        ..Default::default()
+    }
+}
+
+pub fn mtls_curl_readiness_probe(mount_path: &str) -> corev1::Probe {
     let mount_path = mount_path.trim_end_matches('/');
     corev1::Probe {
         exec: Some(corev1::ExecAction {

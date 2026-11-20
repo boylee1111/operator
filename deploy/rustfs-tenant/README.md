@@ -120,9 +120,9 @@ tenant:
 These are the Operator defaults. Each field is optional, so a values file can
 override only `timeoutSeconds`, for example. The Operator selects the readiness
 handler from Tenant TLS: HTTP/HTTPS uses `/health/ready` on port `9000`, while
-mTLS uses the authenticated exec probe or configured TCP probe. The five-second
+mTLS uses the authenticated `rustfs health --ready` exec probe (or `TENANT_MTLS_READINESS_PROBE=curl` / `tcp`). The five-second
 timeout is the time Kubernetes allows for a probe response; the mTLS exec
-command retains its separate two-second curl timeout, and server-side readiness
+command retains its separate two-second probe timeout, and server-side readiness
 work has its own time budgets.
 
 Install the updated Tenant CRD explicitly before applying these values; Helm

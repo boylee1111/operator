@@ -24,6 +24,9 @@ All notable changes to RustFS Operator are documented in this file. The format i
 
 ### Added
 
+- Default mTLS readiness probes now use `rustfs health --ready --insecure --timeout 2` for distroless
+  and standard image compatibility without external `curl`, while retaining `TENANT_MTLS_READINESS_PROBE=curl`
+  and `TENANT_MTLS_READINESS_PROBE=tcp` overrides for older RustFS images.
 - Tenant `spec.readinessProbe` with optional initial delay, timeout, period, failure
   threshold, and success threshold settings, preserved during reconciliation.
 - Full mutual TLS (client-to-Pod and Pod-to-Pod) support when `caTrust.clientCaSecretRef` is
