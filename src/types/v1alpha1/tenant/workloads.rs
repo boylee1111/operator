@@ -27,7 +27,8 @@ use crate::types::v1alpha1::security_context::{
     security_context_pair_delegates_to_platform,
 };
 use crate::types::v1alpha1::tls::{
-    TLS_SERVER_VOLUME_NAME, TlsPlan, http_probe, mtls_readiness_probe, tcp_probe,
+    TLS_SERVER_VOLUME_NAME, TlsPlan, http_probe, mtls_curl_readiness_probe, mtls_readiness_probe,
+    tcp_probe,
 };
 use k8s_openapi::DeepMerge;
 use k8s_openapi::api::apps::v1;
@@ -1707,10 +1708,12 @@ impl Tenant {
         } = security;
 
         let mut readiness_probe = if tls_plan.mtls_enabled {
-            if super::helper::use_tcp_mtls_readiness_probe(&self.spec.env) {
-                tcp_probe()
-            } else {
-                mtls_readiness_probe(&tls_plan.mount_path)
+            match super::helper::mtls_readiness_probe_mode(&self.spec.env) {
+                super::helper::MtlsReadinessProbeMode::Rustfs => mtls_readiness_probe(),
+                super::helper::MtlsReadinessProbeMode::Curl => {
+                    mtls_curl_readiness_probe(&tls_plan.mount_path)
+                }
+                super::helper::MtlsReadinessProbeMode::Tcp => tcp_probe(),
             }
         } else {
             http_probe("/health/ready", tls_plan.probe_scheme)
@@ -3983,21 +3986,16 @@ mod tests {
             .as_ref()
             .and_then(|exec| exec.command.as_ref())
             .expect("mTLS readiness probe should use exec");
-        assert!(command.iter().any(|arg| arg == "curl"));
-        assert!(
-            command
-                .windows(2)
-                .any(|w| w == ["--cert", "/var/run/rustfs/tls/client_cert.pem"])
-        );
-        assert!(
-            command
-                .windows(2)
-                .any(|w| w == ["--key", "/var/run/rustfs/tls/client_key.pem"])
-        );
-        assert!(
-            command
-                .iter()
-                .any(|arg| arg == "https://127.0.0.1:9000/health/ready")
+        assert_eq!(
+            command,
+            &[
+                "rustfs",
+                "health",
+                "--ready",
+                "--insecure",
+                "--timeout",
+                "2",
+            ]
         );
 
         let needs_update = tenant
@@ -4006,6 +4004,47 @@ mod tests {
         assert!(
             needs_update,
             "enabling mTLS probes should trigger StatefulSet update"
+        );
+
+        let mut curl_override_tenant = tenant.clone();
+        curl_override_tenant.spec.env.push(corev1::EnvVar {
+            name: crate::types::v1alpha1::tenant::helper::TENANT_MTLS_READINESS_PROBE_ENV
+                .to_string(),
+            value: Some("curl".to_string()),
+            ..Default::default()
+        });
+        let curl_override_sts = curl_override_tenant
+            .new_statefulset_with_tls_plan(pool, &mtls_plan)
+            .expect("Should create StatefulSet with curl mTLS readiness override");
+        let curl_command = curl_override_sts
+            .spec
+            .as_ref()
+            .expect("StatefulSet should have spec")
+            .template
+            .spec
+            .as_ref()
+            .expect("Pod template should have spec")
+            .containers[0]
+            .readiness_probe
+            .as_ref()
+            .and_then(|probe| probe.exec.as_ref())
+            .and_then(|exec| exec.command.as_ref())
+            .expect("TENANT_MTLS_READINESS_PROBE=curl should use exec");
+        assert!(curl_command.iter().any(|arg| arg == "curl"));
+        assert!(
+            curl_command
+                .windows(2)
+                .any(|w| w == ["--cert", "/var/run/rustfs/tls/client_cert.pem"])
+        );
+        assert!(
+            curl_command
+                .windows(2)
+                .any(|w| w == ["--key", "/var/run/rustfs/tls/client_key.pem"])
+        );
+        assert!(
+            curl_command
+                .iter()
+                .any(|arg| arg == "https://127.0.0.1:9000/health/ready")
         );
 
         let mut tcp_override_tenant = tenant.clone();
@@ -5769,7 +5808,7 @@ mod tests {
 
     #[test]
     fn readiness_timing_preserves_mtls_handlers_and_converges() {
-        for mode in ["exec", "tcp"] {
+        for mode in ["rustfs", "curl", "exec", "tcp"] {
             let mut tenant = crate::tests::create_test_tenant(None, None);
             tenant.spec.env.push(corev1::EnvVar {
                 name: "TENANT_MTLS_READINESS_PROBE".to_string(),
@@ -5790,7 +5829,7 @@ mod tests {
                 .unwrap()
                 .containers[0];
             let baseline_probe = baseline_container.readiness_probe.as_ref().unwrap();
-            assert_eq!(baseline_probe.exec.is_some(), mode == "exec");
+            assert_eq!(baseline_probe.exec.is_some(), mode != "tcp");
             assert_eq!(baseline_probe.tcp_socket.is_some(), mode == "tcp");
             assert!(
                 !tenant

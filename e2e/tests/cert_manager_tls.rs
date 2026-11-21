@@ -685,28 +685,68 @@ fn mtls_tls_plan_projects_client_identity_and_uses_tcp_and_exec_probes() -> Resu
         .and_then(|exec| exec.command.as_ref())
         .context("mTLS readiness probe should use exec")?;
     ensure!(
-        readiness_command.windows(2).any(|w| {
+        readiness_command
+            == &[
+                "rustfs",
+                "health",
+                "--ready",
+                "--insecure",
+                "--timeout",
+                "2",
+            ],
+        "mTLS readiness probe should invoke `rustfs health --ready --insecure --timeout 2`, got {readiness_command:?}"
+    );
+
+    let mut curl_tenant = tenant.clone();
+    curl_tenant
+        .spec
+        .env
+        .push(k8s_openapi::api::core::v1::EnvVar {
+            name: "TENANT_MTLS_READINESS_PROBE".to_string(),
+            value: Some("curl".to_string()),
+            ..Default::default()
+        });
+    let curl_statefulset = curl_tenant.new_statefulset_with_tls_plan(pool, &tls_plan)?;
+    let curl_command = curl_statefulset
+        .spec
+        .as_ref()
+        .context("curl StatefulSet should have spec")?
+        .template
+        .spec
+        .as_ref()
+        .context("curl pod template should have spec")?
+        .containers
+        .iter()
+        .find(|container| container.name == "rustfs")
+        .context("rustfs container should exist")?
+        .readiness_probe
+        .as_ref()
+        .and_then(|probe| probe.exec.as_ref())
+        .and_then(|exec| exec.command.as_ref())
+        .context("TENANT_MTLS_READINESS_PROBE=curl should use exec")?;
+    ensure!(
+        curl_command.windows(2).any(|w| {
             w == [
                 "--cert",
                 &format!("{DEFAULT_TLS_MOUNT_PATH}/{RUSTFS_CLIENT_CERT_FILE}"),
             ]
         }),
-        "mTLS readiness probe should present the mounted client certificate"
+        "curl mTLS readiness probe should present the mounted client certificate"
     );
     ensure!(
-        readiness_command.windows(2).any(|w| {
+        curl_command.windows(2).any(|w| {
             w == [
                 "--key",
                 &format!("{DEFAULT_TLS_MOUNT_PATH}/{RUSTFS_CLIENT_KEY_FILE}"),
             ]
         }),
-        "mTLS readiness probe should present the mounted client key"
+        "curl mTLS readiness probe should present the mounted client key"
     );
     ensure!(
-        readiness_command
+        curl_command
             .iter()
             .any(|arg| arg == "https://127.0.0.1:9000/health/ready"),
-        "mTLS readiness probe should check https://127.0.0.1:9000/health/ready"
+        "curl mTLS readiness probe should check https://127.0.0.1:9000/health/ready"
     );
 
     Ok(())

@@ -33,21 +33,38 @@ pub(crate) fn get_rustfs_mount_path() -> Option<String> {
     Some("/data".to_owned())
 }
 
-/// Environment variable that overrides the mTLS readiness probe mode (`tcp` / `tcpSocket` vs default `exec` with `curl`).
-/// Can be set on the operator process or in `tenant.spec.env` for distroless images without `curl`.
-/// Caveat: `tcpSocket` succeeds as soon as port 9000 accepts TCP connections, before `/health/ready`
-/// confirms storage read quorum (tracked in https://github.com/rustfs/rustfs/issues/9256).
+/// Environment variable that selects the mTLS readiness probe mode (`rustfs`, `curl`, or `tcp`).
+/// Defaults to `rustfs` (`rustfs health --ready --insecure --timeout 2`), which works in both
+/// standard and distroless container images without requiring `curl` or `/bin/sh`.
+/// Set `curl` or `tcp` on the operator process or in `tenant.spec.env` when running older RustFS
+/// images that predate the built-in `rustfs health` subcommand.
 pub const TENANT_MTLS_READINESS_PROBE_ENV: &str = "TENANT_MTLS_READINESS_PROBE";
 pub const RUSTFS_MTLS_READINESS_PROBE_ENV: &str = "RUSTFS_MTLS_READINESS_PROBE";
 
-pub(crate) fn is_tcp_mtls_readiness_probe_value(value: &str) -> bool {
-    let trimmed = value.trim();
-    trimmed.eq_ignore_ascii_case("tcp") || trimmed.eq_ignore_ascii_case("tcpsocket")
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum MtlsReadinessProbeMode {
+    #[default]
+    Rustfs,
+    Curl,
+    Tcp,
 }
 
-pub(crate) fn use_tcp_mtls_readiness_probe(
+impl MtlsReadinessProbeMode {
+    pub(crate) fn parse(value: &str) -> Self {
+        let trimmed = value.trim();
+        if trimmed.eq_ignore_ascii_case("tcp") || trimmed.eq_ignore_ascii_case("tcpsocket") {
+            Self::Tcp
+        } else if trimmed.eq_ignore_ascii_case("curl") {
+            Self::Curl
+        } else {
+            Self::Rustfs
+        }
+    }
+}
+
+pub(crate) fn mtls_readiness_probe_mode(
     explicit_env: &[k8s_openapi::api::core::v1::EnvVar],
-) -> bool {
+) -> MtlsReadinessProbeMode {
     if let Some(value) = explicit_env
         .iter()
         .rev()
@@ -57,12 +74,15 @@ pub(crate) fn use_tcp_mtls_readiness_probe(
         })
         .and_then(|env| env.value.as_deref())
     {
-        return is_tcp_mtls_readiness_probe_value(value);
+        return MtlsReadinessProbeMode::parse(value);
     }
 
     std::env::var(TENANT_MTLS_READINESS_PROBE_ENV)
         .ok()
         .or_else(|| std::env::var(RUSTFS_MTLS_READINESS_PROBE_ENV).ok())
         .as_deref()
-        .is_some_and(is_tcp_mtls_readiness_probe_value)
+        .map_or(
+            MtlsReadinessProbeMode::Rustfs,
+            MtlsReadinessProbeMode::parse,
+        )
 }
